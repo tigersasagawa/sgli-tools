@@ -34,6 +34,14 @@ def index_eqr2latlon(row, col):
     lon = (col+0.5)*d+llon
     return [lat, lon]
 
+def latlon2index_sin(tile_pos, lat, lon):
+    d = 1/480
+    pixel_num_total = 360/d
+    pixel_num_part = pixel_num_total*np.cos(np.deg2rad(lat))
+    row = (90-lat)/d-tile_pos[0]*4800
+    col = pixel_num_part*(lon/360)+pixel_num_total/2-tile_pos[1]*4800
+    return row, col
+
 def NN(x, data_list):
     data_list = np.array(data_list)
     d = data_list-x
@@ -60,7 +68,7 @@ llon = np.round(llon/d)*d #ここで端をまとめるのかそのままにす�
 rlon = np.round(rlon/d)*d #もし繋げたりしたいのなら, これは必要だし, 1タイルに注目するなら, ここは不要. 2021/02/06
 
 row_num = 4800
-col_num = int(abs(np.round((llon-rlon)/d)))
+col_num = np.int(np.abs(np.round(llon-rlon)/d))
 
 QA_flag = file['Image_data']['QA_flag']
 Rs_VN03 = file['Image_data']['Rs_VN03']
@@ -69,9 +77,9 @@ Rs_VN07 = file['Image_data']['Rs_VN07']
 
 qa = QA_flag[()]*QA_flag.attrs['Slope']+QA_flag.attrs['Offset']
 vn03, vn05, vn07 = Rs_VN03[()], Rs_VN05[()], Rs_VN07[()]
-#vn03 = np.where(qa == 2, vn03, np.nan)
-#vn05 = np.where(qa == 2, vn05, np.nan)
-#vn07 = np.where(qa == 2, vn07, np.nan)
+vn03 = np.where(qa == 2, vn03, np.nan)
+vn05 = np.where(qa == 2, vn05, np.nan)
+vn07 = np.where(qa == 2, vn07, np.nan)
 data = np.dstack([vn03, vn05, vn07]).reshape(4800**2, 3)
 condition = deepcopy(data)
 judge = condition == 65535
@@ -90,29 +98,17 @@ data = data.reshape(4800, 4800, 3)
 
 #data = 2000*data #cv2などで.png形式で表示する際にはおそらく必要. geotiffなら不要.
 
-v = int(input_name[21:23])   #自動取得にする必要あり
-h = int(input_name[23:25])  #自動取得にする必要あり
-
-l_edge_latlon = np.array([index_sin2latlon([v, h], i, 0) for i in range(0, 4800)])
-r_edge_latlon = np.array([index_sin2latlon([v, h], i, 4799) for i in range(0, 4800)])
-
-l_edge_index_eqr = np.array([latlon2index_eqr(i[0], i[1]) for i in l_edge_latlon])
-r_edge_index_eqr = np.array([latlon2index_eqr(i[0], i[1]) for i in r_edge_latlon])
-
-list_lon_sin = [index_sin2latlon([v, h], r, c)[1] for r in tqdm(range(0, 4800)) for c in range(0, 4800)]
-list_lon_sin = np.array(list_lon_sin).reshape(4800, 4800)
+v = int(input_name[21:23])
+h = int(input_name[23:25])
 
 output_array = []
 for pix in tqdm(range(0, row_num*col_num)):
-    row = pix//col_num
-    col = pix%col_num
-    eqr_center_lon = index_eqr2latlon(row, col)[1]
-    list_lon = list_lon_sin[row]
-    extract_row = row
-    if l_edge_index_eqr[row, 1] <= col <= r_edge_index_eqr[row, 1]:
-        extract_row = row
-        extract_col = NN(eqr_center_lon, list_lon)
-        output_array.append(data[extract_row, extract_col])
+    row_eqr = pix//col_num
+    col_eqr = pix%col_num
+    lat, lon = indexeqr2latlon(row_eqr, col_eqr)
+    row_sin, col_sin = latlon2index_sin([v, h], lat, lon)
+    if 0 <= col_sin <= 4799
+        output_array.append(data[np.int(row_sin), np.int(col_sin)])
     else:
         output_array.append(nan)
 output_array = np.array(output_array).reshape(row_num, col_num, 3)
