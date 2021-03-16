@@ -4,6 +4,7 @@ import h5py
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
+from sklearn.neighbors import NearestNeighbors
 import cv2
 
 parser = argparse.ArgumentParser(description='This .py file converts hdf file of SGLI to png file.')
@@ -15,46 +16,35 @@ input_name = args.input
 file_name = input_name.split('/')[-1]
 #output = args.output
 
-def progress(x):
-    print("\r["+"#"*x+" "*(10-x)+"]", end="")
-    print(format(x, '02'), end="")
-    print("/10", end="")
-    
-progress(1)
+v = int(file_name[21:23])
+h = int(file_name[23:25])
 
-def index_eqr2latlon(rowcol):
-    row = rowcol[0]
-    col = rowcol[1]
-    lat = ulat-(row+0.5)*d
-    lon = llon+(col+0.5)*d
-    return np.vstack([lat, lon])
-
-def latlon2index_sin(tile_pos, latlon):
+def latlon2index_eqr(latlon):
     lat = latlon[0]
     lon = latlon[1]
-    pixel_num_total = 360/d
-    pixel_num_part = pixel_num_total*np.cos(np.deg2rad(lat))
-    row = (90-lat)/d-tile_pos[0]*4800
-    col = pixel_num_part*(lon/360)+pixel_num_total/2-tile_pos[1]*4800
+    row = (ulat-lat)/d-0.5
+    col = (lon-llon)/d-0.5
     return np.vstack([row, col])
 
+def index_sin2latlon(pos, ij):
+    i = ij[0]
+    j = ij[1]
+    lat = 90-10*pos[0]-(i+0.5)/480
+    lon = (-180+10*pos[1]+j/480)/np.cos(np.deg2rad(lat))
+    return np.vstack([lat, lon])
+
 d = 1/480
-nan = [np.nan, np.nan, np.nan]
 
 file = h5py.File(input_name, 'r')
 
-progress(2)
-
-lllon = file['Geometry_data'].attrs['Lower_left_longitude'][0]
-ullon = file['Geometry_data'].attrs['Upper_left_longitude'][0]
+ullat, ullon = index_sin2latlon([v, h], [-0.5, -0.5])
+lllat, lllon = index_sin2latlon([v, h], [4799.5, -0.5])
 llon = np.min([lllon, ullon])
-
-lrlon = file['Geometry_data'].attrs['Lower_right_longitude'][0]
-urlon = file['Geometry_data'].attrs['Upper_right_longitude'][0]
+llat = lllat
+lrlat, lrlon = index_sin2latlon([v, h], [4799.5, 4799.5])
+urlat, urlon = index_sin2latlon([v, h], [-0.5, 4799.5])
 rlon = np.max([lrlon, urlon])
-
-llat = file['Geometry_data'].attrs['Lower_left_latitude'][0]
-ulat = file['Geometry_data'].attrs['Upper_left_latitude'][0]
+ulat = urlat
 
 llon = np.round(llon/d)*d #We should remove here if we don't need to conect other tile.
 rlon = np.round(rlon/d)*d #We should remove here if we don't need to conect other tile.
@@ -67,16 +57,12 @@ Rs_VN03 = file['Image_data']['Rs_VN03']
 Rs_VN05 = file['Image_data']['Rs_VN05']
 Rs_VN08 = file['Image_data']['Rs_VN08']
 
-progress(2)
-
 qa = QA_flag[()]*QA_flag.attrs['Slope']+QA_flag.attrs['Offset']
 vn03, vn05, vn08 = Rs_VN03[()], Rs_VN05[()], Rs_VN08[()]
 vn03 = np.where(qa == 2, vn03, np.nan)
 vn05 = np.where(qa == 2, vn05, np.nan)
 vn08 = np.where(qa == 2, vn08, np.nan)
 data = np.dstack([vn03, vn05, vn08]).reshape(4800**2, 3)
-
-progress(3)
 
 condition = deepcopy(data)
 judge = condition == 65535
@@ -88,51 +74,32 @@ condition[judge] = 0
 condition[~judge] = np.nan
 condition = condition.reshape(4800**2, 1)
 data = data+condition
-
-progress(4)
-
 data[:, 0] = data[:, 0]*Rs_VN03.attrs['Slope']+Rs_VN03.attrs['Offset']
 data[:, 1] = data[:, 1]*Rs_VN05.attrs['Slope']+Rs_VN05.attrs['Offset']
 data[:, 2] = data[:, 2]*Rs_VN08.attrs['Slope']+Rs_VN08.attrs['Offset']
 data = data.reshape(4800, 4800, 3)
+data = np.hstack([np.nan*np.zeros([4800, 1, 3]), data, np.nan*np.zeros([4800, 1, 3])])
 data = 2250*data #not needed. if we want geotiff.
 
-v = int(file_name[21:23])
-h = int(file_name[23:25])
+num_list = np.arange(0, 4800*4801)
+row_list = np.hstack([np.arange(0, 4800).reshape(-1, 1), np.array(num_list//4801).reshape(4800, 4801)]).flatten()
+col_list = np.hstack([-1*np.ones(4800).reshape(-1, 1), np.fmod(num_list, 4801).reshape(4800, 4801)]).flatten()
 
-progress(5)
+rowcol_sin = np.vstack([row_list, col_list])
+latlon = index_sin2latlon([v, h], rowcol_sin)
+rowcol_eqr = latlon2index_eqr(latlon)
+col_eqr = rowcol_eqr[1].reshape(4800, 4802)
 
-num_list = np.arange(0, row_num*col_num)
-row_list = num_list//col_num
-col_list = num_list%col_num
+output_array = []
+for i in tqdm(range(0, 4800)):
+    extractor = NearestNeighbors(metric='euclidean', n_neighbors=1)
+    extractor.fit(col_eqr[i].reshape(-1, 1))
+    col = extractor.kneighbors(np.arange(0, col_num).reshape(-1, 1))[1].flatten()
+    output_array.append(data[i][col])
+output_array = np.array(output_array)
 
-progress(6)
-
-rowcol_eqr = np.dstack([row_list, col_list]).reshape(row_num*col_num, 2).T
-latlon = index_eqr2latlon(rowcol_eqr)
-rowcol_sin = latlon2index_sin([v, h], latlon)
-
-progress(7)
-
-row_sin = rowcol_sin[0]
-col_sin = rowcol_sin[1]
-row_sin = row_sin.astype(np.int64)
-col_sin = col_sin.astype(np.int64)
-
-mask = np.where((0 <= col_sin) & (col_sin < 4800), 0, np.nan)
-col_sin = np.where((0 <= col_sin) & (col_sin < 4800), col_sin, 0)
-
-progress(8)
-
-output_array = data[row_sin, col_sin]
-output_array = (output_array.T+mask).T
-output_array = output_array.reshape(row_num, col_num, 3)
-
-progress(9)
-
-year = file_name[7:11]
-dir_name = './images_'+year+'_'+file_name[21:23]+file_name[23:25]+'/'
-output_name = dir_name+file_name[:-3]+'.png'
-cv2.imwrite(output_name, output_array)
-
-progress(10)
+#year = file_name[7:11]
+#dir_name = './images_'+year+'_'+file_name[21:23]+file_name[23:25]+'/'
+#output_name = dir_name+file_name[:-3]+'.png'
+file_name = file_name[:-3]+'.png'
+cv2.imwrite(file_name, output_array)
